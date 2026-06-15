@@ -120,6 +120,21 @@ function addBuilding(scene, colliders, label, opts) {
   roof.castShadow = true;
   scene.add(roof);
 
+  const windowMat = new THREE.MeshStandardMaterial({
+    color: "#cde9ff",
+    emissive: "#6ab8ff",
+    emissiveIntensity: 0.18,
+    roughness: 0.2,
+    metalness: 0.05,
+  });
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = -2; col <= 2; col += 1) {
+      const pane = new THREE.Mesh(new THREE.PlaneGeometry(0.68, 0.48), windowMat);
+      pane.position.set(opts.x + col * 2, opts.h * 0.55 + row * 1.15, opts.z + opts.d * 0.5 + 0.02);
+      scene.add(pane);
+    }
+  }
+
   scene.add(createSign(label, opts.x, opts.z - opts.d * 0.72));
   colliders.push(buildColliderForMesh(mesh, 0.3));
 }
@@ -129,9 +144,28 @@ export function createCampusWorld(scene) {
   const interactables = [];
   const worldHalfSize = 42;
 
+  const skyCanvas = document.createElement("canvas");
+  skyCanvas.width = 64;
+  skyCanvas.height = 512;
+  const skyCtx = skyCanvas.getContext("2d");
+  const gradient = skyCtx.createLinearGradient(0, 0, 0, 512);
+  gradient.addColorStop(0, "#7db8ff");
+  gradient.addColorStop(0.45, "#b8d8ff");
+  gradient.addColorStop(1, "#e8f3ff");
+  skyCtx.fillStyle = gradient;
+  skyCtx.fillRect(0, 0, 64, 512);
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(120, 24, 24),
+    new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(skyCanvas),
+      side: THREE.BackSide,
+    })
+  );
+  scene.add(sky);
+
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(90, 90),
-    new THREE.MeshStandardMaterial({ color: "#4c9e5a", roughness: 1 })
+    new THREE.MeshStandardMaterial({ color: "#4c9e5a", roughness: 0.95, metalness: 0.03 })
   );
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -145,7 +179,7 @@ export function createCampusWorld(scene) {
   for (const [x, z, w, d] of paths) {
     const path = new THREE.Mesh(
       new THREE.BoxGeometry(w, 0.05, d),
-      new THREE.MeshStandardMaterial({ color: "#d4d8df" })
+      new THREE.MeshStandardMaterial({ color: "#d4d8df", roughness: 0.82 })
     );
     path.position.set(x, 0.03, z);
     path.receiveShadow = true;

@@ -18,6 +18,11 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function lerpAngle(current, target, alpha) {
+  const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  return current + delta * alpha;
+}
+
 export default function Game3D({ customization, onRestartToCreator }) {
   const mountRef = useRef(null);
   const pausedRef = useRef(false);
@@ -56,6 +61,10 @@ export default function Game3D({ customization, onRestartToCreator }) {
     renderer.setSize(mount.clientWidth, mount.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.04;
     mount.appendChild(renderer.domElement);
 
     const world = createCampusWorld(scene);
@@ -73,17 +82,24 @@ export default function Game3D({ customization, onRestartToCreator }) {
     }
 
     const controller = createInputController(renderer.domElement);
+    controller.setCameraYaw(Math.PI * 0.98);
+    controller.setCameraPitch(0.44);
+    controller.setCameraDistance(6.2);
     const rayTarget = new THREE.Vector3();
+    const moveVelocity = new THREE.Vector3();
+    const desiredVelocity = new THREE.Vector3();
+    const cameraOffset = new THREE.Vector3();
     const clock = new THREE.Clock();
     let raf = 0;
     let saveAccumulator = 0;
+    let hudAccumulator = 0;
     let missionIndex = saved?.missionIndex ?? 0;
     let careerPoints = saved?.careerPoints ?? 0;
     let energy = saved?.energy ?? 100;
     let priorP = false;
     let priorR = false;
     let priorE = false;
-    let interactionPrompt = "Explore campus and follow your mission markers.";
+    let interactionPrompt = "WASD/Arrows move, drag mouse to orbit, wheel to zoom, E interact.";
     setHudState({ careerPoints, energy, missionIndex, interactionPrompt });
 
     const onResize = () => {
@@ -144,52 +160,62 @@ export default function Game3D({ customization, onRestartToCreator }) {
 
       if (!pausedRef.current) {
         const input = controller.getMovementVector();
-        const yaw = controller.getCameraYaw() * settingsRef.current.cameraSensitivity;
+        controller.setLookSensitivity(settingsRef.current.cameraSensitivity);
+        const yaw = controller.getCameraYaw();
+        const pitch = controller.getCameraPitch();
+        const distance = controller.getCameraDistance();
         const direction = new THREE.Vector3(
           input.x * Math.cos(yaw) - input.y * Math.sin(yaw),
           0,
           input.x * Math.sin(yaw) + input.y * Math.cos(yaw)
         );
 
-        const isMoving = direction.lengthSq() > 0.0001 && energy > 0;
-        const speed = isMoving ? 5.5 : 0;
+        const isMoving = direction.lengthSq() > 0.0001 && energy > 0.8;
+        const speed = isMoving ? 6.8 : 0;
 
-        if (isMoving) {
+        if (direction.lengthSq() > 0.001) {
           direction.normalize();
-          const nextPos = player.group.position.clone().addScaledVector(direction, speed * dt);
+        }
+        desiredVelocity.copy(direction).multiplyScalar(speed);
+        moveVelocity.lerp(desiredVelocity, isMoving ? 0.18 : 0.12);
+        const nextPos = player.group.position.clone().addScaledVector(moveVelocity, dt);
+
+        if (moveVelocity.lengthSq() > 0.0004) {
           if (
             !collidesWithAny(nextPos, PLAYER_RADIUS, world.colliders) &&
             !isOutOfBounds(nextPos, world.worldHalfSize)
           ) {
             player.group.position.copy(nextPos);
           }
-          player.group.rotation.y = Math.atan2(direction.x, direction.z);
+          const targetYaw = Math.atan2(moveVelocity.x, moveVelocity.z);
+          player.group.rotation.y = lerpAngle(player.group.rotation.y, targetYaw, 0.22);
 
           const swing = Math.sin(elapsed * 12) * 0.6;
           player.parts.armLeft.rotation.x = swing;
           player.parts.armRight.rotation.x = -swing;
           player.parts.legLeft.rotation.x = -swing;
           player.parts.legRight.rotation.x = swing;
-          player.parts.body.position.y = 1.02 + Math.abs(Math.sin(elapsed * 12)) * 0.06;
+          player.parts.body.position.y = Math.abs(Math.sin(elapsed * 12)) * 0.06;
           energy = clamp(energy - dt * 12, 0, 100);
         } else {
           player.parts.armLeft.rotation.x *= 0.8;
           player.parts.armRight.rotation.x *= 0.8;
           player.parts.legLeft.rotation.x *= 0.8;
           player.parts.legRight.rotation.x *= 0.8;
-          player.parts.body.position.y = 1.02;
+          player.parts.body.position.y = 0;
           energy = clamp(energy + dt * 7, 0, 100);
         }
 
         updatePetFollow(pet, player.group.position, dt, elapsed);
 
-        const desiredCamera = new THREE.Vector3(
-          player.group.position.x + Math.sin(yaw) * 6.5,
-          4.5,
-          player.group.position.z + Math.cos(yaw) * 6.5
+        cameraOffset.set(
+          Math.sin(yaw) * Math.cos(pitch) * distance,
+          1.8 + Math.sin(pitch) * distance,
+          Math.cos(yaw) * Math.cos(pitch) * distance
         );
+        const desiredCamera = player.group.position.clone().add(cameraOffset);
         camera.position.lerp(desiredCamera, 0.08);
-        rayTarget.set(player.group.position.x, 1.2, player.group.position.z);
+        rayTarget.set(player.group.position.x, 1.45, player.group.position.z);
         camera.lookAt(rayTarget);
 
         const mission = getMission(missionIndex);
@@ -229,12 +255,27 @@ export default function Game3D({ customization, onRestartToCreator }) {
         renderer.render(scene, camera);
       }
 
-      setHudState({
-        careerPoints: Math.floor(careerPoints),
-        energy: Math.floor(energy),
-        missionIndex,
-        interactionPrompt,
-      });
+      hudAccumulator += dt;
+      if (hudAccumulator > 0.08) {
+        setHudState((prev) => {
+          const next = {
+            careerPoints: Math.floor(careerPoints),
+            energy: Math.floor(energy),
+            missionIndex,
+            interactionPrompt,
+          };
+          if (
+            prev.careerPoints === next.careerPoints &&
+            prev.energy === next.energy &&
+            prev.missionIndex === next.missionIndex &&
+            prev.interactionPrompt === next.interactionPrompt
+          ) {
+            return prev;
+          }
+          return next;
+        });
+        hudAccumulator = 0;
+      }
       raf = requestAnimationFrame(loop);
     };
     loop();
@@ -284,6 +325,7 @@ export default function Game3D({ customization, onRestartToCreator }) {
       <button className="back-btn" onClick={onRestartToCreator}>
         Character Creator
       </button>
+      <div className="controls-tip">Drag mouse to orbit camera • Scroll to zoom</div>
     </div>
   );
 }
